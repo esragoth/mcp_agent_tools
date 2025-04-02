@@ -2,11 +2,11 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-MCP Agent Tools is a Python library that bridges Machine Comprehension Protocol (MCP) servers with various AI agent frameworks. It provides tools to easily expose MCP server capabilities to AI agents, with built-in support for the SmolAgents framework.
+MCP Agent Tools is a Python library that bridges Model Context Protocol (MCP) servers with various AI agent frameworks. It provides tools to easily expose MCP server capabilities to AI agents, with built-in support for the SmolAgents framework.
 
 ## What is MCP?
 
-Machine Comprehension Protocol (MCP) is a standardized protocol for exposing tools and capabilities to AI models and agents. MCP servers provide a consistent interface for AI agents to access external tools and capabilities.
+Model Context Protocol (MCP) is a standardized protocol for exposing tools and capabilities to AI models and agents. MCP servers provide a consistent interface for AI agents to access external tools and capabilities.
 
 ## Features
 
