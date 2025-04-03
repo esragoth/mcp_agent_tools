@@ -24,6 +24,8 @@ setup(
     python_requires=">=3.10",
     install_requires=[
         "mcp",
-        "smolagents",
     ],
+    extras_require={
+        "smolagents": ["smolagents"],
+    },
 ) 
