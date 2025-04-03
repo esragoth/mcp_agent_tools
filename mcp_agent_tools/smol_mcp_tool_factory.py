@@ -1,17 +1,34 @@
 import inspect
 import logging
-from typing import Dict, Any, Optional, Callable, List
-
+import functools
+from typing import Dict, Any, Optional, Callable, List, Tuple, Type
+import sys
+from mcp.types import CallToolResult
 # Import MCP related classes
 from .models import MCPTool
 from .mcp_tool_service import MCPToolService
-from .exceptions import (
-    MCPAgentToolsError,
-    ConversionError,
-    ServiceError,
-    ToolNotFoundError,
-)
-from smolagents.tools import Tool as SmolTool
+from .smol_tool_converter import MCPToSmolToolConverter, convert_mcp_to_smol
+from smolagents.tools import ToolCollection
+# Try to import SmolTool, but create a fallback if not available
+try:
+    from smolagents.tools import Tool as SmolTool
+except ImportError:
+    # Create a minimal version for testing/type checking
+    class SmolTool:
+        """Fallback implementation when smolagents is not installed."""
+        name = ""
+        description = ""
+        inputs = {}
+        output_type = "string"
+        
+        def __init__(self, **kwargs):
+            pass
+            
+        def forward(self, **kwargs):
+            pass
+            
+        def validate_arguments(self):
+            pass
 
 class SmolMCPToolFactory:
     """
@@ -80,6 +97,47 @@ class SmolMCPToolFactory:
                 
             # We own this service since we created it
             self.own_service = True
+            
+        # Dictionary to store original functions
+        self.original_functions = {}
+        
+        # Dictionary to store wrapper functions
+        self.wrapper_functions = {}
+        
+        # Create a converter instance
+        self.converter = MCPToSmolToolConverter(logger=self.logger)
+        
+        # Load all tools and create wrapper functions immediately
+        self._load_tools_and_create_wrappers()
+    
+    def _load_tools_and_create_wrappers(self):
+        """
+        Load all tools from the service directly.
+        Since they are now enhanced callable functions with metadata, no wrappers needed.
+        """
+        if not self.started:
+            self.logger.warning("MCP Tool Service is not started, cannot load tools")
+            return
+            
+        try:
+            # Get all tools - these are now enhanced callable functions
+            functions = self._get_tools()
+            
+            # Store them directly in original_functions and wrapper_functions
+            for func in functions:
+                if hasattr(func, 'name'):
+                    name = func.name
+                    self.original_functions[name] = func
+                    self.wrapper_functions[name] = func  # No wrapper needed
+                    self.logger.debug(f"Stored enhanced function: {name}")
+                    
+                    # Log the inputs to help debug parameter mapping
+                    if hasattr(func, 'inputs'):
+                        self.logger.info(f"Tool '{name}' has inputs: {func.inputs}")
+                else:
+                    self.logger.warning(f"Tool function has no name attribute")
+        except Exception as e:
+            self.logger.error(f"Error loading tools: {e}")
     
     def __del__(self):
         """Clean up resources when the factory is garbage collected."""
@@ -147,211 +205,98 @@ class SmolMCPToolFactory:
             own_service=True
         )
     
-    def get_tools(self) -> List[MCPTool]:
+    def _get_tools(self) -> List[Callable]:
         """
-        Get all available MCP tools.
+        Get all available tools as callable functions with metadata.
         
         Returns:
-            List of MCPTool objects.
+            List of callable functions with metadata.
         """
         if not self.started:
             self.logger.warning("MCP Tool Service is not started or not connected to server")
             return []
         
         try:
-            # Get the MCPTool objects from the service
-            mcp_tools = self.service.get_tools()
-            self.logger.info(f"Retrieved {len(mcp_tools)} MCPTool objects")
-            return mcp_tools
+            # Get the callable functions from the service
+            functions = self.service.get_tools()
+            self.logger.info(f"Retrieved {len(functions)} callable tool functions")
+            return functions
         except Exception as e:
-            error_msg = f"Error retrieving tools: {e}"
-            self.logger.error(error_msg)
-            raise ServiceError(error_msg) from e
-        
-    def mcp_to_smolagent_tool(self, mcp_tool: MCPTool) -> SmolTool:
+            self.logger.error(f"Error retrieving tools: {e}")
+            return []
+    
+    
+    def mcp_to_smolagent_tool(self, mcp_tool: Callable) -> 'SmolTool':
         """
-        Convert an MCPTool to a SmolAgents Tool using a class-based approach.
-        
-        Creates a dynamic class that inherits from SmolAgents Tool class with properly
-        defined inputs and output.
+        Convert an MCP tool (callable with metadata) to a SmolAgents Tool.
         
         Args:
-            mcp_tool: The MCPTool to convert
+            mcp_tool: The MCP tool function with metadata
             
         Returns:
-            A SmolAgents Tool instance
-            
-        Raises:
-            ConversionError: If there's an error converting the tool
-        """
-        if not mcp_tool:
-            raise ConversionError("Cannot convert None to SmolAgents Tool")
-            
-        if not hasattr(mcp_tool, 'name') or not mcp_tool.name:
-            raise ConversionError("MCPTool must have a name")
-            
-        if not hasattr(mcp_tool, 'function') or not callable(mcp_tool.function):
-            raise ConversionError(f"MCPTool '{mcp_tool.name}' must have a callable function")
+            A SmolAgents Tool object
 
-        try:
-            # Extract information from the MCPTool
-            name = mcp_tool.name
-            description = mcp_tool.description
-            function = mcp_tool.function
-            
-            # Create input schema
-            input_schema = {}
-            param_names = []
-            
-            # Check if we need to rename 'kwargs' parameter (it causes issues with forward method)
-            has_kwargs_param = False
-            
-            if hasattr(mcp_tool, 'inputs') and mcp_tool.inputs:
-                for param_name, param_info in mcp_tool.inputs.items():
-                    # Check if we have a parameter named 'kwargs'
-                    if param_name == 'kwargs':
-                        has_kwargs_param = True
-                        # Rename it to avoid conflicts with the **kwargs signature
-                        param_name = 'query'
-                    
-                    param_names.append(param_name)
-                    param_type = "string"  # Default type
-                    
-                    # Try to convert Python type to JSON schema type
-                    if 'type' in param_info:
-                        python_type = param_info['type']
-                        if python_type == str or python_type == 'string':
-                            param_type = "string"
-                        elif python_type == int or python_type == 'integer':
-                            param_type = "integer"
-                        elif python_type == float or python_type == 'number':
-                            param_type = "number"
-                        elif python_type == bool or python_type == 'boolean':
-                            param_type = "boolean"
-                        elif python_type == list or python_type == 'array':
-                            param_type = "array"
-                        elif python_type == dict or python_type == 'object':
-                            param_type = "object"
-                    
-                    input_schema[param_name] = {
-                        "type": param_type,
-                        "description": param_info.get('description', f"Parameter: {param_name}")
-                    }
-            
-            # If no parameters were found, add a default one to satisfy SmolAgents
-            if not param_names:
-                param_names.append("query")
-                input_schema["query"] = {
-                    "type": "string",
-                    "description": "Input query for the tool"
+        """
+        tool_info_list= []
+        with ToolCollection.from_mcp({"url": "http://localhost:8000/sse"}) as tool_collection:
+            for tool in tool_collection.tools:
+                tool_info = {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "inputs": tool.inputs,
+                    "output_type": tool.output_type
                 }
+                tool_info_list.append(tool_info)
+            self.logger.info(f"Retrieved tool information: {tool_info_list}")
+        
+        # Check if we can find this tool in the collected tools by name
+        for tool_info in tool_info_list:
+            if tool_info['name'] == mcp_tool.name:
+                # Override the inputs with what's in the tool collection
+                mcp_tool.inputs = tool_info['inputs']
+                self.logger.info(f"Updated inputs for tool {mcp_tool.name}")
+                break
             
-            # Create a dynamic class that inherits from SmolTool
-            class DynamicMCPTool(SmolTool):
-                # Set class attributes
-                name = mcp_tool.name
-                description = mcp_tool.description
-                inputs = input_schema  # Use the renamed variable to avoid name conflict
-                output_type = "string"  # Default to string, can be refined later
-                
-                def __init__(self, **kwargs):
-                    super().__init__(**kwargs)
-                    # Store a reference to the original function
-                    self.mcp_function = function
-                    # Store reference to whether we had a kwargs parameter that was renamed
-                    self.had_kwargs_param = has_kwargs_param
+        # For any tool with matching name in tool_info_list, skip validation
+        skip_validation = any(tool_info['name'] == mcp_tool.name for tool_info in tool_info_list)
+        if skip_validation:
+            self.logger.info(f"Skipping validation for tool {mcp_tool.name}")
             
-            # Create the most appropriate forward method
-            if has_kwargs_param:
-                # Special case for the tool that had a 'kwargs' parameter
-                # We need to map the query parameter back to 'kwargs'
-                forward_code = """
-def forward(self, query):
-    \"\"\"Call the original MCP tool function with the provided arguments.\"\"\"
-    return self.mcp_function(kwargs=query)
-"""
-            else:
-                # Normal case - dynamically create the forward method with explicit parameters
-                param_str = ", ".join(["self"] + param_names)
-                kwargs_str = ", ".join([f"{name}={name}" for name in param_names])
-                
-                # Create the forward method code
-                forward_code = f"""
-def forward({param_str}):
-    \"\"\"Call the original MCP tool function with the provided arguments.\"\"\"
-    return self.mcp_function({kwargs_str})
-"""
-            
-            # Create namespace for exec
-            namespace = {}
-            exec(forward_code, namespace)
-            
-            # Attach the method to the class
-            DynamicMCPTool.forward = namespace["forward"]
-            
-            # Update class name for better debugging
-            DynamicMCPTool.__name__ = f"MCPTool_{name}"
-            
-            # Create and return an instance of the dynamic class
-            tool_instance = DynamicMCPTool()
-            
-            # Log information about the created tool
-            self.logger.debug(f"Created SmolAgents tool using class approach: {tool_instance.__class__.__name__}")
-            self.logger.debug(f"Tool inputs: {tool_instance.inputs}")
-            self.logger.debug(f"Forward method signature: {inspect.signature(tool_instance.forward)}")
-            
-            return tool_instance
-            
-        except Exception as e:
-            error_msg = f"Error converting MCPTool '{mcp_tool.name}' to SmolAgents Tool: {e}"
-            self.logger.error(error_msg)
-            raise ConversionError(error_msg) from e
+        # Convert the tool
+        return self.converter.convert(mcp_tool, skip_validation=skip_validation)
         
     def get_smolagent_tools(self) -> List[Any]:
         """
         Get all available tools as SmolAgents Tool objects.
         
-        This method converts the MCPTool objects to SmolAgents Tool objects
-        using the SmolAgents tool decorator.
+        This is the main public API for accessing tools in this class.
+        The other method (_get_tools) is a private implementation detail
+        and should not be used directly.
         
         Returns:
-            List of SmolAgents Tool objects
-            
-        Raises:
-            ServiceError: If there's an error with the MCP Tool Service
+            List of SmolAgents Tool objects for agent use
         """
             
         # Get the MCPTool objects
-        try:
-            mcp_tools = self.get_tools()
-            
-            # Convert to SmolAgents Tool objects
-            smolagent_tools = []
-            conversion_errors = []
-            
-            for tool in mcp_tools:
-                try:
-                    smolagent_tool = self.mcp_to_smolagent_tool(tool)
-                    smolagent_tools.append(smolagent_tool)
-                except ConversionError as e:
-                    # Collect errors but continue processing other tools
-                    error_msg = f"Error converting {tool.name if hasattr(tool, 'name') else 'unknown'} to SmolAgents Tool: {e}"
-                    self.logger.error(error_msg)
-                    conversion_errors.append(error_msg)
-                    
-            self.logger.info(f"Converted {len(smolagent_tools)} tools to SmolAgents Tools")
-            
-            # If no tools were successfully converted but we had errors, raise an exception
-            if not smolagent_tools and conversion_errors:
-                raise ConversionError(f"Failed to convert any tools. Errors: {', '.join(conversion_errors)}")
+        mcp_tools = self._get_tools()
+        
+        # Convert to SmolAgents Tool objects
+        smolagent_tools = []
+        
+        # Process all tools
+        for tool in mcp_tools:
+            try:
+                # Convert the tool
+                smolagent_tool = self.mcp_to_smolagent_tool(tool)
+                smolagent_tools.append(smolagent_tool)
+                self.logger.info(f"Converted tool {tool.name}")
+            except Exception as e:
+                self.logger.error(f"Error converting {tool.name} to SmolAgents Tool: {e}")
                 
-            return smolagent_tools
-            
-        except ServiceError:
-            # Re-raise ServiceError exceptions
-            raise
-        except Exception as e:
-            error_msg = f"Error getting SmolAgents tools: {e}"
-            self.logger.error(error_msg)
-            raise ServiceError(error_msg) from e
+        self.logger.info(f"Converted {len(smolagent_tools)} tools")
+        self.logger.info(f"Wrapper functions available: {list(self.wrapper_functions.keys())}")
+        
+        # Return the SmolAgents tools
+        return smolagent_tools
+    
 

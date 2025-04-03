@@ -14,15 +14,6 @@ from mcp.client.stdio import stdio_client
 from mcp.client.sse import sse_client
 
 from .models import MCPTool
-from .exceptions import (
-    MCPAgentToolsError,
-    ConnectionError,
-    ToolCallError,
-    ToolNotFoundError,
-    InvalidArgumentError,
-    ServiceError,
-    TimeoutError,
-)
 
 class MCPClient:
     """
@@ -96,7 +87,7 @@ class MCPClient:
         elif self.connection_type == "sse":
             await self._setup_sse_connection()
         else:
-            raise InvalidArgumentError(f"Unsupported connection type: {self.connection_type}")
+            raise ValueError(f"Unsupported connection type: {self.connection_type}")
             
         await self.initialize()
         return self
@@ -122,7 +113,7 @@ class MCPClient:
     async def _setup_sse_connection(self):
         """Set up SSE connection to MCP server."""
         if not self.server_url:
-            raise InvalidArgumentError("Server URL is required for SSE connection")
+            raise ValueError("Server URL is required for SSE connection")
             
         try:
             # Create and enter the sse_client context manager
@@ -174,13 +165,13 @@ class MCPClient:
     async def initialize(self) -> None:
         """Initialize the connection with the MCP server."""
         if not self.session:
-            raise ServiceError("Session not initialized. Use as async context manager.")
+            raise RuntimeError("Session not initialized. Use as async context manager.")
         await self.session.initialize()
 
     async def list_prompts(self) -> List[Dict[str, Any]]:
         """List all available prompts from the server."""
         if not self.session:
-            raise ServiceError("Session not initialized. Use as async context manager.")
+            raise RuntimeError("Session not initialized. Use as async context manager.")
         return await self.session.list_prompts()
 
     async def get_prompt(self, prompt_id: str, arguments: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -195,19 +186,19 @@ class MCPClient:
             The prompt with applied arguments
         """
         if not self.session:
-            raise ServiceError("Session not initialized. Use as async context manager.")
+            raise RuntimeError("Session not initialized. Use as async context manager.")
         return await self.session.get_prompt(prompt_id, arguments=arguments or {})
 
     async def list_resources(self) -> List[Dict[str, Any]]:
         """List all available resources from the server."""
         if not self.session:
-            raise ServiceError("Session not initialized. Use as async context manager.")
+            raise RuntimeError("Session not initialized. Use as async context manager.")
         return await self.session.list_resources()
 
     async def list_tools(self) -> List[Dict[str, Any]]:
         """List all available tools from the server."""
         if not self.session:
-            raise ServiceError("Session not initialized. Use as async context manager.")
+            raise RuntimeError("Session not initialized. Use as async context manager.")
         return await self.session.list_tools()
 
     async def get_tools_list(self) -> List:
@@ -221,7 +212,7 @@ class MCPClient:
             A list of tool objects
         """
         if not self.session:
-            raise ServiceError("Session not initialized. Use as async context manager.")
+            raise RuntimeError("Session not initialized. Use as async context manager.")
             
         # Get raw result from list_tools
         raw_result = await self.list_tools()
@@ -275,11 +266,8 @@ class MCPClient:
             A tuple of (content, mime_type)
         """
         if not self.session:
-            raise ServiceError("Session not initialized. Use as async context manager.")
-        try:
-            return await self.session.read_resource(resource_path)
-        except Exception as e:
-            raise ToolCallError(f"Failed to read resource '{resource_path}': {e}") from e
+            raise RuntimeError("Session not initialized. Use as async context manager.")
+        return await self.session.read_resource(resource_path)
 
     async def call_tool(self, tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> Any:
         """
@@ -293,11 +281,8 @@ class MCPClient:
             The result of the tool call
         """
         if not self.session:
-            raise ServiceError("Session not initialized. Use as async context manager.")
-        try:
-            return await self.session.call_tool(tool_name, arguments=arguments or {})
-        except Exception as e:
-            raise ToolCallError(f"Failed to call tool '{tool_name}': {e}") from e
+            raise RuntimeError("Session not initialized. Use as async context manager.")
+        return await self.session.call_tool(tool_name, arguments=arguments or {})
 
     async def verify_connection(self) -> bool:
         """
@@ -325,7 +310,7 @@ class MCPClient:
             Each function has the same signature as the corresponding tool.
         """
         if not self.session:
-            raise ServiceError("Session not initialized. Use as async context manager.")
+            raise RuntimeError("Session not initialized. Use as async context manager.")
             
         # Get the tools from the server using our helper method
         tool_list = await self.get_tools_list()
@@ -386,7 +371,7 @@ class MCPClient:
             A dictionary of tool name to synchronous callable function.
         """
         if not self.session:
-            raise ServiceError("Session not initialized. Use as async context manager.")
+            raise RuntimeError("Session not initialized. Use as async context manager.")
             
         # Get the async tool functions
         async_tools = await self.get_tools_as_functions()
@@ -776,7 +761,7 @@ class MCPToolService:
         return tool_names
         
     def _create_tool_functions(self, client, raw_tools, tool_names):
-        """Create MCPTool objects from the raw tools."""
+        """Create enhanced callable functions with metadata directly instead of MCPTool objects."""
         tool_objects = {}
         
         # If we have no tool names, we can't create tools
@@ -792,28 +777,33 @@ class MCPToolService:
                 if description:
                     tool_descriptions[name] = description
         
-        # Create a MCPTool for each tool name
+        # Create an enhanced function for each tool name
         for name in tool_names:
             # Create a closure to capture the tool name
             def make_tool_function(tool_name):
                 # Store the tool_name in the closure
                 name_in_closure = tool_name
                 
+                # Store the service reference for closure
+                service = self
+                
                 # Define a function that directly communicates with MCP server
-                # This avoids the recursive call loop
-                def func(**kwargs):
+                def func(self_or_none=None, **kwargs):
+                    # self_or_none is ignored - it's just there to handle if called as a method
+                    # The actual service reference is captured in the closure
+                    
                     # Use a command to directly call the server
-                    with self._lock:
+                    with service._lock:
                         # Generate a unique request ID
-                        request_id = self._next_request_id
-                        self._next_request_id += 1
+                        request_id = service._next_request_id
+                        service._next_request_id += 1
                         
                         # Create a result queue for this request
                         result_queue = queue.Queue()
-                        self._result_queues[request_id] = result_queue
+                        service._result_queues[request_id] = result_queue
                     
                     # Submit the command
-                    self._submit_command({
+                    service._submit_command({
                         "action": "call_tool",
                         "request_id": request_id,
                         "tool_name": name_in_closure,
@@ -829,18 +819,18 @@ class MCPToolService:
                             raise RuntimeError(f"Tool execution error: {result.get('error')}")
                     finally:
                         # Clean up
-                        with self._lock:
-                            if request_id in self._result_queues:
-                                del self._result_queues[request_id]
+                        with service._lock:
+                            if request_id in service._result_queues:
+                                del service._result_queues[request_id]
                                 
                 return func
                 
-            # Create the function and set metadata
+            # Create the function
             tool_func = make_tool_function(name)
-            tool_func.__name__ = name
             
-            # Set description from what we found in raw_tools, or use a default
+            # Set basic metadata
             description = tool_descriptions.get(name, f"Call the {name} tool")
+            tool_func.__name__ = name
             tool_func.__doc__ = description
             
             # Extract parameter descriptions from the function docstring if available
@@ -856,20 +846,35 @@ class MCPToolService:
                         param_desc = ':'.join(parts[1:]).strip()
                         param_descriptions[param_name] = param_desc
             
-            # Create the MCPTool
+            # Add enhanced metadata as attributes directly on the function
+            tool_func.name = name
+            tool_func.description = description
+            tool_func.inputs = {}  # Will be filled below
+            tool_func.output_description = f"Result of the {name} tool"
+            
+            # Parse parameter info for the inputs schema
             try:
-                tool = MCPTool(
-                    name=name,
-                    description=description,
-                    function=tool_func,
-                    input_descriptions=param_descriptions,
-                    output_description=f"Result of the {name} tool"
-                )
-                
-                # Store the tool
-                tool_objects[name] = tool
+                sig = inspect.signature(tool_func)
+                for param_name, param in sig.parameters.items():
+                    # Use provided description or generate a placeholder
+                    param_desc = "Parameter"
+                    if param_descriptions and param_name in param_descriptions:
+                        param_desc = param_descriptions[param_name]
+                        
+                    # Get type from annotation if available
+                    param_type = param.annotation if param.annotation != inspect.Parameter.empty else Any
+                    
+                    tool_func.inputs[param_name] = {
+                        "type": param_type,
+                        "description": param_desc
+                    }
             except Exception as e:
-                self.logger.error(f"Error creating MCPTool for {name}: {e}")
+                self.logger.warning(f"Error parsing signature for {name}: {e}")
+                # If we can't parse the signature, create a generic input
+                tool_func.inputs = {"kwargs": {"type": Dict[str, Any], "description": f"Arguments for the {name} tool"}}
+            
+            # Store the function directly
+            tool_objects[name] = tool_func
             
         return tool_objects
 
@@ -931,14 +936,12 @@ class MCPToolService:
         if not self.connected:
             raise RuntimeError("MCP Tool Service is not connected")
             
-        # Check if tool_name refers to an MCPTool object directly
+        # Check if tool_name refers to a callable function directly
         if tool_name in self._tool_cache:
             tool = self._tool_cache[tool_name]
-            # If it's an MCPTool object, call it directly
-            if isinstance(tool, MCPTool):
-                # IMPORTANT: Do not call self._call_tool here to avoid infinite recursion
-                # Instead, directly invoke the underlying function
-                return tool.function(**args)
+            # If it's a callable function, call it directly
+            if callable(tool):
+                return tool(**args)
             
         # Otherwise, use the standard approach through the command queue
         with self._lock:
@@ -972,25 +975,25 @@ class MCPToolService:
                 if request_id in self._result_queues:
                     del self._result_queues[request_id]
                     
-    def get_tool_functions(self) -> Dict[str, MCPTool]:
+    def get_tool_functions(self) -> Dict[str, Callable]:
         """
-        Get all available tools as MCPTool objects.
+        Get all available tools as callable functions with metadata.
         
         Returns:
-            Dictionary of tool name to MCPTool object.
+            Dictionary of tool name to callable function.
         """
         if not self.connected:
             raise RuntimeError("MCP Tool Service is not connected")
             
-        # Return the cached tool objects
+        # Return the cached tool functions
         return self._tool_cache
         
-    def get_tools(self) -> List[MCPTool]:
+    def get_tools(self) -> List[Callable]:
         """
-        Get all available tools as a list of MCPTool objects.
+        Get all available tools as a list of callable functions with metadata.
         
         Returns:
-            List of MCPTool objects.
+            List of callable functions with metadata.
         """
         if not self.connected:
             raise RuntimeError("MCP Tool Service is not connected")
