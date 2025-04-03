@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mcp_agent_tools"
+version = "0.1.0"
+description = "Tools for integrating with MCP servers for AI agents"
+readme = "README.md"
+authors = [
+    {name = "ESRagoth", email = "beppe.wizzy@gmail.com"}
+]
+license = {text = "MIT"}
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+requires-python = ">=3.8"
+dependencies = [
+    "aiohttp",
+    "websockets",
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "black",
+    "isort",
+    "mypy",
+]
+smolagents = [
+    "smolagents",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/esragoth/mcp_agent_tools"
+"Bug Tracker" = "https://github.com/esragoth/mcp_agent_tools/issues"
+
+[tool.setuptools]
+packages = ["mcp_agent_tools"]
+
+[tool.black]
+line-length = 88
+target-version = ["py38"]
+
+[tool.isort]
+profile = "black" 

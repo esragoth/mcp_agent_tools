@@ -11,6 +11,16 @@ from .models import MCPTool
 from .mcp_tool_service import MCPClient, MCPToolService
 from .smol_mcp_tool_factory import SmolMCPToolFactory
 from .smol_tool_converter import MCPToSmolToolConverter, convert_mcp_to_smol
+from .exceptions import (
+    MCPAgentToolsError,
+    ConnectionError,
+    ToolCallError,
+    ToolNotFoundError,
+    ConversionError,
+    InvalidArgumentError,
+    ServiceError,
+    TimeoutError,
+)
 
 __all__ = [
     'MCPTool',
@@ -19,4 +29,12 @@ __all__ = [
     'SmolMCPToolFactory',
     'MCPToSmolToolConverter',
     'convert_mcp_to_smol',
+    'MCPAgentToolsError',
+    'ConnectionError',
+    'ToolCallError',
+    'ToolNotFoundError',
+    'ConversionError',
+    'InvalidArgumentError',
+    'ServiceError',
+    'TimeoutError',
 ] 
